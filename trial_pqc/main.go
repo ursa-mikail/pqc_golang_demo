@@ -9,6 +9,10 @@ import (
 	"trial_pqc/hashing"
 	"trial_pqc/signing"
 	"trial_pqc/util"
+
+	"crypto/rand"
+
+	"golang.org/x/crypto/chacha20"
 )
 
 func main() {
@@ -31,6 +35,11 @@ func main() {
 		// Demonstrate KEM (Key Encapsulation)
 		if err := demoKEM(level); err != nil {
 			log.Printf("KEM demo failed: %v", err)
+		}
+
+		// Demonstrate KEM (Key Encapsulation) with ChaCha20
+		if err := demoKEMWithChaCha20(level); err != nil {
+			log.Printf("KEMWithChaCha20 demo failed: %v", err)
 		}
 
 		// Demonstrate Digital Signatures
@@ -89,6 +98,63 @@ func demoKEM(level util.SecurityLevel) error {
 	fmt.Printf("  Ciphertext: %d bytes\n", len(ciphertext))
 	fmt.Printf("  Shared Secret: %d bytes\n", len(sharedSecret))
 	fmt.Printf("  Secrets Match: %v ✅\n", match)
+
+	return nil
+}
+
+func demoKEMWithChaCha20(level util.SecurityLevel) error {
+	fmt.Println("🔐 KEM + ChaCha20 Demo:")
+
+	// 1. Generate keypair
+	pubKey, privKey, err := ciphering.GenerateKeyPair(level)
+	if err != nil {
+		return fmt.Errorf("keypair generation failed: %w", err)
+	}
+
+	// 2. Encapsulate (sender)
+	ciphertext, sharedSecretSender, err := ciphering.Encapsulate(pubKey)
+	if err != nil {
+		return fmt.Errorf("encapsulation failed: %w", err)
+	}
+
+	// 3. Decapsulate (receiver)
+	sharedSecretReceiver, err := ciphering.Decapsulate(privKey, ciphertext)
+	if err != nil {
+		return fmt.Errorf("decapsulation failed: %w", err)
+	}
+
+	// Verify shared secrets match
+	if !util.SecureCompare(sharedSecretSender, sharedSecretReceiver) {
+		return fmt.Errorf("shared secrets do not match")
+	}
+	fmt.Printf("  ✅ Shared secret established (%d bytes)\n", len(sharedSecretSender))
+
+	// 4. Use shared secret as ChaCha20 key
+	key := sharedSecretSender // already 32 bytes (256 bits)
+	nonce := make([]byte, chacha20.NonceSize)
+	if _, err := rand.Read(nonce); err != nil {
+		return fmt.Errorf("nonce generation failed: %w", err)
+	}
+
+	// Encrypt a message
+	plaintext := []byte("Hello PQC + ChaCha20 world!")
+	cipher, err := chacha20.NewUnauthenticatedCipher(key, nonce)
+	if err != nil {
+		return fmt.Errorf("cipher init failed: %w", err)
+	}
+	ciphertextMsg := make([]byte, len(plaintext))
+	cipher.XORKeyStream(ciphertextMsg, plaintext)
+
+	// Decrypt the message
+	cipherDec, _ := chacha20.NewUnauthenticatedCipher(key, nonce)
+	recovered := make([]byte, len(ciphertextMsg))
+	cipherDec.XORKeyStream(recovered, ciphertextMsg)
+
+	// Show results
+	fmt.Printf("  Nonce: %x\n", nonce)
+	fmt.Printf("  Plaintext: %s\n", plaintext)
+	fmt.Printf("  Ciphertext: %x\n", ciphertextMsg)
+	fmt.Printf("  Recovered: %s\n", recovered)
 
 	return nil
 }
