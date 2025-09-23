@@ -1,9 +1,9 @@
 {
   "errors": [],
   "summary": {
-    "failed": 6,
-    "passed": 66,
-    "total_tests": 72
+    "failed": 0,
+    "passed": 75,
+    "total_tests": 75
   },
   "test_results": {
     "KEM-001": true,
@@ -36,7 +36,7 @@
     "KEM-028": true,
     "KEM-029": true,
     "KEM-030": true,
-    "SIG-001": false,
+    "SIG-001": true,
     "SIG-002": true,
     "SIG-003": true,
     "SIG-004": true,
@@ -47,10 +47,10 @@
     "SIG-009": true,
     "SIG-010": true,
     "SIG-011": true,
-    "SIG-012": false,
+    "SIG-012": true,
     "SIG-013": true,
     "SIG-014": true,
-    "SIG-015": false,
+    "SIG-015": true,
     "SIG-016": true,
     "SIG-017": true,
     "SIG-018": true,
@@ -61,10 +61,10 @@
     "SIG-023": true,
     "SIG-024": true,
     "SIG-025": true,
-    "SIG-026": false,
+    "SIG-026": true,
     "SIG-027": true,
     "SIG-028": true,
-    "SIG-029": false,
+    "SIG-029": true,
     "SIG-030": true,
     "SIG-031": true,
     "SIG-032": true,
@@ -75,9 +75,12 @@
     "SIG-037": true,
     "SIG-038": true,
     "SIG-039": true,
-    "SIG-040": false,
+    "SIG-040": true,
     "SIG-041": true,
-    "SIG-042": true
+    "SIG-042": true,
+    "SIG-043": true,
+    "SIG-044": true,
+    "SIG-045": true
   },
-  "timestamp": "2025-09-22T21:41:25-07:00"
+  "timestamp": "2025-09-23T14:17:14-07:00"
 }

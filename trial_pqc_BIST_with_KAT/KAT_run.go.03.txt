@@ -189,7 +189,8 @@ func demo_KAT_KEM(tv TestVector) (bool, error) {
 }
 
 // demo_KAT_Signature demonstrates signature operations using known test vectors
-// demo_KAT_Signature demonstrates signature operations using known test vectors
+// Fixed demo_KAT_Signature function for KAT_run.go
+// The issue is that the function is not using the exact message from the test vector
 func demo_KAT_Signature(tv TestVector) (bool, error) {
 	fmt.Printf("✍️ Signature Test: %s\n", tv.Algorithm)
 
@@ -204,69 +205,22 @@ func demo_KAT_Signature(tv TestVector) (bool, error) {
 		return false, fmt.Errorf("failed to decode signature: %w", err)
 	}
 
-	// Reconstruct the original message based on the test vector description
+	// Use the exact message from the test vector (it's hex-encoded)
 	var message []byte
-
-	// Check if this is a "wrong message" test case
-	isWrongMessageTest := strings.Contains(tv.Description, "wrong message")
-
-	// Extract message type from description
-	messageType := extractMessageType(tv.ID, tv.Description)
-
-	switch messageType {
-	case 0:
-		message = []byte("") // Empty message
-	case 1:
-		message = []byte("a") // Single character
-	case 2:
-		message = []byte("Hello, Post-Quantum World!") // Standard message
-	case 3:
-		message = []byte("The quick brown fox jumps over the lazy dog") // Pangram
-	case 4:
-		// Large message with pattern (1000 bytes)
-		message = make([]byte, 1000)
-		for i := range message {
-			message[i] = byte(i % 256)
+	if tv.Message != "" {
+		message, err = hex.DecodeString(tv.Message)
+		if err != nil {
+			return false, fmt.Errorf("failed to decode message: %w", err)
 		}
-	default:
-		// Try to decode from test vector if available
-		if tv.Message != "" {
-			message, err = hex.DecodeString(tv.Message)
-			if err != nil {
-				return false, fmt.Errorf("failed to decode message: %w", err)
-			}
-		} else {
-			message = []byte("") // Default to empty
-		}
-	}
-
-	// For "wrong message" tests, we need to use a different message than what was signed
-	// The signature was created with the original message, but we verify with a modified one
-	if isWrongMessageTest {
-		fmt.Printf("  [DEBUG] Wrong message test detected\n")
-		fmt.Printf("  [DEBUG] Original message type: %d\n", messageType)
-		fmt.Printf("  [DEBUG] Original message length: %d bytes\n", len(message))
-
-		// Modify the message to make it different from what was signed
-		// This simulates verifying a signature with the wrong message
-		if len(message) == 0 {
-			// If original was empty, use non-empty
-			message = []byte("wrong")
-		} else {
-			// Otherwise, append something to change it
-			message = append(message, []byte("_modified")...)
-		}
-
-		fmt.Printf("  [DEBUG] Modified message length: %d bytes\n", len(message))
-		fmt.Printf("  [DEBUG] Modified message (first 50 bytes): %x\n", message[:min(50, len(message))])
+	} else {
+		// Fallback - shouldn't happen with properly generated test vectors
+		message = []byte("test message for signature verification")
 	}
 
 	// Display test vector info
 	fmt.Printf("  Public Key Length: %d bytes\n", len(pubKeyBytes))
 	fmt.Printf("  Signature Length: %d bytes\n", len(signatureBytes))
-	fmt.Printf("  Message Type: %d\n", messageType)
 	fmt.Printf("  Message Length: %d bytes\n", len(message))
-	fmt.Printf("  Is Wrong Message Test: %v\n", isWrongMessageTest)
 
 	if len(message) <= 50 {
 		fmt.Printf("  Message (hex): %x\n", message)
@@ -277,7 +231,7 @@ func demo_KAT_Signature(tv TestVector) (bool, error) {
 		fmt.Printf("  Message (hex, first 32 bytes): %x...\n", message[:32])
 	}
 
-	// Verify signature
+	// Verify signature using the exact message from test vector
 	valid, err := signing.Verify(pubKeyBytes, message, signatureBytes)
 	if err != nil {
 		if tv.ExpectedResult {
@@ -306,11 +260,6 @@ func demo_KAT_Signature(tv TestVector) (bool, error) {
 			return true, nil
 		} else {
 			fmt.Printf("  Signature unexpectedly valid: ❌\n")
-			// Additional debug info for wrong message failures
-			if isWrongMessageTest {
-				fmt.Printf("  [DEBUG] ERROR: Signature validated with wrong message!\n")
-				fmt.Printf("  [DEBUG] This suggests the verification is not working correctly\n")
-			}
 			return false, nil
 		}
 	}
