@@ -1,0 +1,544 @@
+// main.go - KAT (Known Answer Test) demo for PQC algorithms
+package main
+
+import (
+	"crypto/subtle"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+	"time"
+
+	"pqc_bist_demo/ciphering"
+	"pqc_bist_demo/hashing"
+	"pqc_bist_demo/signing"
+	"pqc_bist_demo/util"
+)
+
+// TestVector represents a single test vector from the JSON file
+type TestVector struct {
+	ID             string `json:"id"`
+	Algorithm      string `json:"algorithm"`
+	SecurityLevel  string `json:"security_level"`
+	PublicKey      string `json:"public_key,omitempty"`
+	PrivateKey     string `json:"private_key,omitempty"`
+	Ciphertext     string `json:"ciphertext,omitempty"`
+	SharedSecret   string `json:"shared_secret,omitempty"`
+	Signature      string `json:"signature,omitempty"`
+	Message        string `json:"message,omitempty"`
+	Hash           string `json:"hash,omitempty"`
+	InputData      string `json:"input_data,omitempty"`
+	ExpectedResult bool   `json:"expected_result"`
+	Description    string `json:"description"`
+}
+
+// KATSuite holds all test vectors loaded from JSON
+type KATSuite struct {
+	TestVectors []TestVector
+	Results     map[string]bool
+	Errors      []string
+}
+
+func KAT_main() {
+	fmt.Println("=== Post-Quantum Cryptography KAT Demo ===")
+
+	// Load KAT vectors
+	katSuite, err := loadKATVectors("pqc_test_vectors.json")
+	if err != nil {
+		log.Fatalf("Failed to load KAT vectors: %v", err)
+	}
+
+	fmt.Printf("Loaded %d test vectors\n", len(katSuite.TestVectors))
+
+	// Run KAT demos
+	runKATDemos(katSuite)
+
+	// Print results
+	printKATResults(katSuite)
+}
+
+// loadKATVectors loads test vectors from JSON file
+func loadKATVectors(filename string) (*KATSuite, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read file %s: %w", filename, err)
+	}
+
+	var testVectors []TestVector
+	if err := json.Unmarshal(data, &testVectors); err != nil {
+		return nil, fmt.Errorf("failed to parse JSON: %w", err)
+	}
+
+	return &KATSuite{
+		TestVectors: testVectors,
+		Results:     make(map[string]bool),
+		Errors:      make([]string, 0),
+	}, nil
+}
+
+// runKATDemos runs all KAT demo functions
+func runKATDemos(suite *KATSuite) {
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("RUNNING KNOWN ANSWER TESTS (KAT)")
+	fmt.Println(strings.Repeat("=", 60))
+
+	for _, tv := range suite.TestVectors {
+		fmt.Printf("\nRunning test: %s (%s)\n", tv.ID, tv.Description)
+		fmt.Println(strings.Repeat("-", 40))
+
+		var success bool
+		var err error
+
+		switch {
+		case strings.HasPrefix(tv.ID, "KEM-"):
+			success, err = demo_KAT_KEM(tv)
+		case strings.HasPrefix(tv.ID, "SIG-"):
+			success, err = demo_KAT_Signature(tv)
+		case strings.HasPrefix(tv.ID, "HASH-"):
+			success, err = demo_KAT_Hash(tv)
+		default:
+			err = fmt.Errorf("unknown test vector type: %s", tv.ID)
+		}
+
+		if err != nil {
+			suite.Errors = append(suite.Errors, fmt.Sprintf("%s: %v", tv.ID, err))
+			suite.Results[tv.ID] = false
+			fmt.Printf("❌ FAILED: %v\n", err)
+		} else {
+			suite.Results[tv.ID] = success
+			if success {
+				fmt.Printf("✅ PASSED\n")
+			} else {
+				fmt.Printf("❌ FAILED: Result mismatch\n")
+			}
+		}
+	}
+}
+
+// demo_KAT_KEM demonstrates KEM operations using known test vectors
+func demo_KAT_KEM(tv TestVector) (bool, error) {
+	fmt.Printf("🔐 KEM Test: %s\n", tv.Algorithm)
+
+	// Decode hex strings
+	pubKeyBytes, err := hex.DecodeString(tv.PublicKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode public key: %w", err)
+	}
+
+	privKeyBytes, err := hex.DecodeString(tv.PrivateKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode private key: %w", err)
+	}
+
+	ciphertextBytes, err := hex.DecodeString(tv.Ciphertext)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode ciphertext: %w", err)
+	}
+
+	expectedSharedSecret, err := hex.DecodeString(tv.SharedSecret)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode shared secret: %w", err)
+	}
+
+	// Display test vector info
+	fmt.Printf("  Public Key Length: %d bytes\n", len(pubKeyBytes))
+	fmt.Printf("  Private Key Length: %d bytes\n", len(privKeyBytes))
+	fmt.Printf("  Ciphertext Length: %d bytes\n", len(ciphertextBytes))
+	fmt.Printf("  Expected Shared Secret Length: %d bytes\n", len(expectedSharedSecret))
+
+	// Perform decapsulation
+	recoveredSecret, err := ciphering.Decapsulate(privKeyBytes, ciphertextBytes)
+	if err != nil {
+		if tv.ExpectedResult {
+			return false, fmt.Errorf("decapsulation failed unexpectedly: %w", err)
+		}
+		// Expected to fail
+		fmt.Printf("  Decapsulation failed as expected: %v\n", err)
+		return true, nil
+	}
+
+	fmt.Printf("  Recovered Shared Secret Length: %d bytes\n", len(recoveredSecret))
+
+	// Compare shared secrets using constant-time comparison
+	match := subtle.ConstantTimeCompare(expectedSharedSecret, recoveredSecret) == 1
+
+	if tv.ExpectedResult {
+		if match {
+			fmt.Printf("  Shared secrets match: ✅\n")
+			fmt.Printf("  Expected: %x\n", expectedSharedSecret[:min(16, len(expectedSharedSecret))])
+			fmt.Printf("  Got:      %x\n", recoveredSecret[:min(16, len(recoveredSecret))])
+			return true, nil
+		} else {
+			fmt.Printf("  Shared secrets do not match: ❌\n")
+			fmt.Printf("  Expected: %x\n", expectedSharedSecret[:min(16, len(expectedSharedSecret))])
+			fmt.Printf("  Got:      %x\n", recoveredSecret[:min(16, len(recoveredSecret))])
+			return false, nil
+		}
+	} else {
+		// Expected to produce different result
+		if !match {
+			fmt.Printf("  Shared secrets correctly do not match: ✅\n")
+			return true, nil
+		} else {
+			fmt.Printf("  Shared secrets unexpectedly match: ❌\n")
+			return false, nil
+		}
+	}
+}
+
+// demo_KAT_Signature demonstrates signature operations using known test vectors
+func demo_KAT_Signature(tv TestVector) (bool, error) {
+	fmt.Printf("✍️ Signature Test: %s\n", tv.Algorithm)
+
+	// Decode hex strings
+	pubKeyBytes, err := hex.DecodeString(tv.PublicKey)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode public key: %w", err)
+	}
+
+	signatureBytes, err := hex.DecodeString(tv.Signature)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode signature: %w", err)
+	}
+
+	// Determine message based on test vector description and ID
+	var message []byte
+
+	// Extract message type from test ID or description
+	messageType := extractMessageType(tv.ID, tv.Description)
+
+	switch messageType {
+	case 0:
+		// Default test message
+		message = []byte("test message for signature verification")
+	case 1:
+		// Single byte 'a' (0x61)
+		message = []byte{0x61}
+	case 2:
+		// "Hello, Post-Quantum World!"
+		message = []byte("Hello, Post-Quantum World!")
+	case 3:
+		// "The quick brown fox jumps over the lazy dog"
+		message = []byte("The quick brown fox jumps over the lazy dog")
+	case 4:
+		// 2KB of incrementing bytes (0x00, 0x01, 0x02, ...)
+		message = make([]byte, 2000)
+		for i := range message {
+			message[i] = byte(i % 256)
+		}
+	default:
+		// If message is provided in test vector, use it
+		if tv.Message != "" {
+			if strings.HasPrefix(tv.Message, "hex:") {
+				message, err = hex.DecodeString(tv.Message[4:])
+				if err != nil {
+					return false, fmt.Errorf("failed to decode message: %w", err)
+				}
+			} else {
+				// Try to decode as hex first, fallback to string
+				if decoded, hexErr := hex.DecodeString(tv.Message); hexErr == nil && len(decoded) > 0 {
+					message = decoded
+				} else {
+					message = []byte(tv.Message)
+				}
+			}
+		} else {
+			message = []byte("test message for signature verification")
+		}
+	}
+
+	// Display test vector info
+	fmt.Printf("  Public Key Length: %d bytes\n", len(pubKeyBytes))
+	fmt.Printf("  Signature Length: %d bytes\n", len(signatureBytes))
+	fmt.Printf("  Message Type: %d\n", messageType)
+	fmt.Printf("  Message Length: %d bytes\n", len(message))
+	if len(message) <= 50 {
+		fmt.Printf("  Message (hex): %x\n", message)
+		if isPrintable(message) {
+			fmt.Printf("  Message (text): %s\n", string(message))
+		}
+	} else {
+		fmt.Printf("  Message (hex, first 32 bytes): %x...\n", message[:32])
+	}
+
+	// Verify signature
+	valid, err := signing.Verify(pubKeyBytes, message, signatureBytes)
+	if err != nil {
+		if tv.ExpectedResult {
+			return false, fmt.Errorf("signature verification failed unexpectedly: %w", err)
+		}
+		// Expected to fail
+		fmt.Printf("  Signature verification failed as expected: %v\n", err)
+		return true, nil
+	}
+
+	fmt.Printf("  Signature Valid: %v\n", valid)
+
+	// For debugging: if this should pass but doesn't, try with different message interpretations
+	if tv.ExpectedResult && !valid {
+		fmt.Printf("  DEBUG: Trying alternative message interpretations...\n")
+
+		// Try original message from test vector if available
+		if tv.Message != "" && tv.Message != string(message) {
+			altMessage := []byte(tv.Message)
+			altValid, altErr := signing.Verify(pubKeyBytes, altMessage, signatureBytes)
+			if altErr == nil && altValid {
+				fmt.Printf("  DEBUG: Alternative message worked: %s\n", tv.Message)
+			}
+
+			// Try hex decoding the message
+			if hexMsg, hexErr := hex.DecodeString(tv.Message); hexErr == nil {
+				hexValid, hexVerifyErr := signing.Verify(pubKeyBytes, hexMsg, signatureBytes)
+				if hexVerifyErr == nil && hexValid {
+					fmt.Printf("  DEBUG: Hex-decoded message worked: %x\n", hexMsg)
+				}
+			}
+		}
+	}
+
+	if tv.ExpectedResult {
+		if valid {
+			fmt.Printf("  Signature verification succeeded: ✅\n")
+			return true, nil
+		} else {
+			fmt.Printf("  Signature verification failed: ❌\n")
+			return false, nil
+		}
+	} else {
+		// Expected to be invalid
+		if !valid {
+			fmt.Printf("  Signature correctly invalid: ✅\n")
+			return true, nil
+		} else {
+			fmt.Printf("  Signature unexpectedly valid: ❌\n")
+			return false, nil
+		}
+	}
+}
+
+// extractMessageType extracts the message type from test ID or description
+func extractMessageType(id, description string) int {
+	// Look for "message type X" in description
+	if strings.Contains(description, "message type 0") {
+		return 0
+	} else if strings.Contains(description, "message type 1") {
+		return 1
+	} else if strings.Contains(description, "message type 2") {
+		return 2
+	} else if strings.Contains(description, "message type 3") {
+		return 3
+	} else if strings.Contains(description, "message type 4") {
+		return 4
+	}
+
+	// Default to type 0
+	return 0
+}
+
+// isPrintable checks if a byte slice contains only printable ASCII characters
+func isPrintable(data []byte) bool {
+	for _, b := range data {
+		if b < 32 || b > 126 {
+			return false
+		}
+	}
+	return true
+}
+
+// demo_KAT_Hash demonstrates hash operations using known test vectors
+func demo_KAT_Hash(tv TestVector) (bool, error) {
+	fmt.Printf("🏷️ Hash Test: %s\n", tv.Algorithm)
+
+	// Decode input data
+	var inputData []byte
+	var err error
+	if tv.InputData != "" {
+		if strings.HasPrefix(tv.InputData, "hex:") {
+			inputData, err = hex.DecodeString(tv.InputData[4:])
+		} else {
+			inputData = []byte(tv.InputData)
+		}
+	} else {
+		inputData = []byte("default test data for hashing")
+	}
+
+	if err != nil {
+		return false, fmt.Errorf("failed to decode input data: %w", err)
+	}
+
+	// Decode expected hash
+	expectedHash, err := hex.DecodeString(tv.Hash)
+	if err != nil {
+		return false, fmt.Errorf("failed to decode expected hash: %w", err)
+	}
+
+	// Determine security level from algorithm
+	level := getSecurityLevelFromAlgorithm(tv.Algorithm)
+
+	// Display test vector info
+	fmt.Printf("  Input Data Length: %d bytes\n", len(inputData))
+	fmt.Printf("  Expected Hash Length: %d bytes\n", len(expectedHash))
+	fmt.Printf("  Security Level: %s\n", level.String())
+
+	// Compute hash
+	computedHash, err := hashing.Hash(inputData, level)
+	if err != nil {
+		return false, fmt.Errorf("hash computation failed: %w", err)
+	}
+
+	fmt.Printf("  Computed Hash Length: %d bytes\n", len(computedHash))
+
+	// Compare hashes
+	match := subtle.ConstantTimeCompare(expectedHash, computedHash) == 1
+
+	if match {
+		fmt.Printf("  Hash values match: ✅\n")
+		fmt.Printf("  Expected: %x\n", expectedHash[:min(16, len(expectedHash))])
+		fmt.Printf("  Got:      %x\n", computedHash[:min(16, len(computedHash))])
+		return tv.ExpectedResult, nil
+	} else {
+		fmt.Printf("  Hash values do not match: ❌\n")
+		fmt.Printf("  Expected: %x\n", expectedHash[:min(16, len(expectedHash))])
+		fmt.Printf("  Got:      %x\n", computedHash[:min(16, len(computedHash))])
+		return !tv.ExpectedResult, nil
+	}
+}
+
+// getSecurityLevelFromAlgorithm maps algorithm names to security levels
+func getSecurityLevelFromAlgorithm(algorithm string) util.SecurityLevel {
+	switch {
+	case strings.Contains(algorithm, "512") || strings.Contains(algorithm, "2"):
+		return util.Level128
+	case strings.Contains(algorithm, "768") || strings.Contains(algorithm, "3"):
+		return util.Level192
+	case strings.Contains(algorithm, "1024") || strings.Contains(algorithm, "5"):
+		return util.Level256
+	case strings.Contains(algorithm, "SHAKE128"):
+		return util.Level128
+	case strings.Contains(algorithm, "SHAKE256"):
+		return util.Level192
+	case strings.Contains(algorithm, "SHA3-256"):
+		return util.Level256
+	default:
+		return util.Level192 // Default
+	}
+}
+
+// printKATResults prints a summary of all KAT results
+func printKATResults(suite *KATSuite) {
+	fmt.Println("\n" + strings.Repeat("=", 60))
+	fmt.Println("KAT RESULTS SUMMARY")
+	fmt.Println(strings.Repeat("=", 60))
+
+	passed := 0
+	failed := 0
+
+	// Count by category
+	kemTests := 0
+	kemPassed := 0
+	sigTests := 0
+	sigPassed := 0
+	hashTests := 0
+	hashPassed := 0
+
+	for id, result := range suite.Results {
+		if result {
+			passed++
+		} else {
+			failed++
+		}
+
+		switch {
+		case strings.HasPrefix(id, "KEM-"):
+			kemTests++
+			if result {
+				kemPassed++
+			}
+		case strings.HasPrefix(id, "SIG-"):
+			sigTests++
+			if result {
+				sigPassed++
+			}
+		case strings.HasPrefix(id, "HASH-"):
+			hashTests++
+			if result {
+				hashPassed++
+			}
+		}
+	}
+
+	fmt.Printf("Overall Results:\n")
+	fmt.Printf("  Total Tests: %d\n", len(suite.Results))
+	fmt.Printf("  Passed: %d ✅\n", passed)
+	fmt.Printf("  Failed: %d ❌\n", failed)
+	fmt.Printf("  Success Rate: %.1f%%\n", float64(passed)/float64(len(suite.Results))*100)
+
+	fmt.Printf("\nResults by Category:\n")
+	if kemTests > 0 {
+		fmt.Printf("  KEM Tests: %d/%d passed (%.1f%%)\n", kemPassed, kemTests, float64(kemPassed)/float64(kemTests)*100)
+	}
+	if sigTests > 0 {
+		fmt.Printf("  Signature Tests: %d/%d passed (%.1f%%)\n", sigPassed, sigTests, float64(sigPassed)/float64(sigTests)*100)
+	}
+	if hashTests > 0 {
+		fmt.Printf("  Hash Tests: %d/%d passed (%.1f%%)\n", hashPassed, hashTests, float64(hashPassed)/float64(hashTests)*100)
+	}
+
+	if len(suite.Errors) > 0 {
+		fmt.Printf("\nErrors Encountered:\n")
+		for _, err := range suite.Errors {
+			fmt.Printf("  - %s\n", err)
+		}
+	}
+
+	// Save results to file
+	saveKATResults(suite)
+
+	fmt.Printf("\n" + strings.Repeat("=", 60))
+	if failed == 0 {
+		fmt.Println("🎉 ALL KAT TESTS PASSED!")
+	} else {
+		fmt.Printf("⚠️  %d TESTS FAILED - REVIEW REQUIRED\n", failed)
+	}
+	fmt.Println(strings.Repeat("=", 60))
+}
+
+// saveKATResults saves the test results to a JSON file
+func saveKATResults(suite *KATSuite) {
+	results := map[string]interface{}{
+		"timestamp": time.Now().Format(time.RFC3339),
+		"summary": map[string]interface{}{
+			"total_tests": len(suite.Results),
+			"passed":      0,
+			"failed":      0,
+		},
+		"test_results": suite.Results,
+		"errors":       suite.Errors,
+	}
+
+	// Count passed/failed
+	for _, result := range suite.Results {
+		if result {
+			results["summary"].(map[string]interface{})["passed"] = results["summary"].(map[string]interface{})["passed"].(int) + 1
+		} else {
+			results["summary"].(map[string]interface{})["failed"] = results["summary"].(map[string]interface{})["failed"].(int) + 1
+		}
+	}
+
+	// Marshal to JSON
+	jsonData, err := json.MarshalIndent(results, "", "  ")
+	if err != nil {
+		log.Printf("Failed to marshal results: %v", err)
+		return
+	}
+
+	// Write to file
+	filename := fmt.Sprintf("kat_results_%s.json", time.Now().Format("20060102_150405"))
+	if err := os.WriteFile(filename, jsonData, 0644); err != nil {
+		log.Printf("Failed to write results file: %v", err)
+	} else {
+		fmt.Printf("\nResults saved to: %s\n", filename)
+	}
+}
