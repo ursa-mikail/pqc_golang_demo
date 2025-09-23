@@ -337,6 +337,13 @@ func (bs *BISTSuite) RunKEMBIST() {
 		}
 	}
 
+	if len(bs.Errors) > 0 {
+		fmt.Println("🔴 Exit Criteria Errors:")
+		for _, e := range bs.Errors {
+			fmt.Printf("  - %s\n", e)
+		}
+	}
+
 	// Record results
 	bs.AddResult(BISTResult{
 		TestID:        "KEM-BIST-001",
