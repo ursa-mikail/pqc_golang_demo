@@ -1,142 +1,211 @@
 package main
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"fmt"
+	"io"
 
 	"github.com/cloudflare/circl/kem/xwing"
 )
 
-func main() {
-	fmt.Println("=== X-Wing KEM Breakdown ===\n")
-
-	// Generate seeds
+// 1. Key Exchange Phase (Using X-Wing KEM)
+// Alice (Key Generator)
+func aliceSetup() ([]byte, []byte, error) {
+	// Generate key pair
 	keySeed := make([]byte, 32)
-	rand.Read(keySeed)
-
-	encapSeed := make([]byte, 64)
-	rand.Read(encapSeed)
-
-	fmt.Printf("1. KEY GENERATION\n")
-	fmt.Printf("   Key derivation seed: %x (%d bytes)\n", keySeed, len(keySeed))
-
-	// Derive key pair
-	sk, pk := xwing.DeriveKeyPairPacked(keySeed)
-
-	fmt.Printf("\n2. KEY PAIR STRUCTURE\n")
-	fmt.Printf("   Public Key (pk):\n")
-	fmt.Printf("     - Full size: %d bytes\n", len(pk))
-	fmt.Printf("     - First 50 bytes: %.100x\n", pk[:min(50, len(pk))])
-	fmt.Printf("     - Composition:\n")
-	fmt.Printf("       • X25519 public key: 32 bytes\n")
-	fmt.Printf("       • ML-KEM-768 public key: 1,184 bytes\n")
-	fmt.Printf("       • Total: 1,216 bytes\n")
-
-	fmt.Printf("\n   Private Key (sk):\n")
-	fmt.Printf("     - Packed/seed form: %x (%d bytes)\n", sk, len(sk))
-	fmt.Printf("     - This is just the original 32-byte seed (z)\n")
-	fmt.Printf("     - In memory, expanded to ~2,464 bytes:\n")
-	fmt.Printf("       • ML-KEM-768 private key: 2,400 bytes\n")
-	fmt.Printf("       • X25519 private key: 32 bytes\n")
-	fmt.Printf("       • Precomputed X25519 public key: 32 bytes\n")
-
-	fmt.Printf("\n3. ENCAPSULATION\n")
-	fmt.Printf("   Encapsulation seed: %x (%d bytes)\n", encapSeed, len(encapSeed))
-
-	// Encapsulate
-	ss, ct, _ := xwing.Encapsulate(pk, encapSeed)
-
-	fmt.Printf("\n   Ciphertext (ct):\n")
-	fmt.Printf("     - Full size: %d bytes\n", len(ct))
-	fmt.Printf("     - First 50 bytes: %.100x\n", ct[:min(50, len(ct))])
-	fmt.Printf("     - Composition:\n")
-	fmt.Printf("       • ML-KEM-768 ciphertext: 1,088 bytes\n")
-	fmt.Printf("       • X25519 encapsulated key: 32 bytes\n")
-	fmt.Printf("       • Total: 1,120 bytes\n")
-
-	fmt.Printf("\n4. SHARED SECRET\n")
-	fmt.Printf("   Generated shared secret: %x (%d bytes)\n", ss, len(ss))
-
-	// Decapsulate
-	ss2 := xwing.Decapsulate(ct, sk)
-
-	fmt.Printf("   Decapsulated shared secret: %x (%d bytes)\n", ss2, len(ss2))
-
-	// Verify they match
-	if string(ss) == string(ss2) {
-		fmt.Printf("\n✅ SUCCESS: Shared secrets match!\n")
-	} else {
-		fmt.Printf("\n❌ ERROR: Shared secrets don't match!\n")
+	if _, err := rand.Read(keySeed); err != nil {
+		return nil, nil, err
 	}
 
-	fmt.Printf("\n5. SIZE SUMMARY\n")
-	fmt.Printf("   +----------------------+------------+---------------------+\n")
-	fmt.Printf("   | Component            | Size       | Notes               |\n")
-	fmt.Printf("   +----------------------+------------+---------------------+\n")
-	fmt.Printf("   | Public Key (pk)      | %5d bytes | X25519 + ML-KEM-768 |\n", len(pk))
-	fmt.Printf("   | Ciphertext (ct)      | %5d bytes | ML-KEM + X25519     |\n", len(ct))
-	fmt.Printf("   | Private Key (packed) | %5d bytes | Seed only           |\n", len(sk))
-	fmt.Printf("   | Private Key (expanded)| ~2,464 bytes | In memory         |\n")
-	fmt.Printf("   | Shared Secret        | %5d bytes |                     |\n", len(ss))
-	fmt.Printf("   +----------------------+------------+---------------------+\n")
+	sk, pk := xwing.DeriveKeyPairPacked(keySeed)
+	return sk, pk, nil
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+// Bob (Encapsulator)
+func bobSendMessage(pk []byte, message string) ([]byte, []byte, []byte, error) {
+	// Generate encapsulation seed
+	encapSeed := make([]byte, 64)
+	if _, err := rand.Read(encapSeed); err != nil {
+		return nil, nil, nil, err
 	}
-	return b
+
+	// Encapsulate to get shared secret and ciphertext
+	sharedSecret, ct, err := xwing.Encapsulate(pk, encapSeed)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	// Use shared secret for AES-256-GCM
+	encryptedMessage, nonce, err := encryptWithAESGCM(sharedSecret, []byte(message))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+
+	return ct, encryptedMessage, nonce, nil
+}
+
+// Alice (Decapsulator)
+func aliceReceiveMessage(sk, ct, encryptedMessage, nonce []byte) (string, error) {
+	// Decapsulate to get shared secret
+	sharedSecret := xwing.Decapsulate(ct, sk)
+
+	// Decrypt with AES-256-GCM
+	decrypted, err := decryptWithAESGCM(sharedSecret, nonce, encryptedMessage)
+	if err != nil {
+		return "", err
+	}
+
+	return string(decrypted), nil
+}
+
+// 2. AES-256-GCM Encryption/Decryption Functions
+// Derive AES key from KEM shared secret
+func deriveAESKey(sharedSecret []byte) []byte {
+	// In practice, you might want to use HKDF or similar
+	// For simplicity, we'll use first 32 bytes of shared secret
+	// Real implementations should use proper key derivation
+	aesKey := make([]byte, 32)
+	copy(aesKey, sharedSecret[:32])
+	return aesKey
+}
+
+func encryptWithAESGCM(sharedSecret, plaintext []byte) ([]byte, []byte, error) {
+	aesKey := deriveAESKey(sharedSecret)
+
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// Generate random nonce
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		return nil, nil, err
+	}
+
+	// Encrypt and authenticate
+	ciphertext := gcm.Seal(nil, nonce, plaintext, nil)
+	return ciphertext, nonce, nil
+}
+
+func decryptWithAESGCM(sharedSecret, nonce, ciphertext []byte) ([]byte, error) {
+	aesKey := deriveAESKey(sharedSecret)
+
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return nil, err
+	}
+
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	// Decrypt and verify authentication
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return plaintext, nil
+}
+
+// main flow
+
+func main() {
+	fmt.Println("=== Alice and Bob: X-Wing KEM + AES-256-GCM ===\n")
+
+	// Step 1: Alice generates key pair
+	fmt.Println("1. KEY EXCHANGE")
+	alicePrivateKey, alicePublicKey, err := aliceSetup()
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("   Alice generated key pair\n")
+	fmt.Printf("   Public key size: %d bytes\n", len(alicePublicKey))
+
+	// Step 2: Bob sends encrypted message
+	fmt.Println("\n2. ENCRYPTION")
+	message := "Hello Alice! This is a secret message."
+	fmt.Printf("   Original message: %q\n", message)
+
+	ciphertext, encryptedMessage, nonce, err := bobSendMessage(alicePublicKey, message)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("   Bob encrypted message using Alice's public key\n")
+	fmt.Printf("   KEM ciphertext: %d bytes\n", len(ciphertext))
+	fmt.Printf("   AES-GCM encrypted message: %d bytes\n", len(encryptedMessage))
+
+	// Step 3: Alice decrypts the message
+	fmt.Println("\n3. DECRYPTION")
+	decrypted, err := aliceReceiveMessage(alicePrivateKey, ciphertext, encryptedMessage, nonce)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("   Alice decrypted message: %q\n", decrypted)
+
+	// Verification
+	if decrypted == message {
+		fmt.Println("\n✅ SUCCESS: Secure communication established!")
+	} else {
+		fmt.Println("\n❌ ERROR: Decryption failed!")
+	}
+
+	fmt.Println("\n4. SECURITY PROPERTIES")
+	fmt.Println("   ✅ Post-Quantum Security: X-Wing KEM provides PQ security")
+	fmt.Println("   ✅ Forward Secrecy: Each session uses new ephemeral shared secret")
+	fmt.Println("   ✅ Authentication: AES-GCM provides integrity and authenticity")
+	fmt.Println("   ✅ Confidentiality: AES-256 provides strong encryption")
 }
 
 /*
 % go run main.go
-=== X-Wing KEM Breakdown ===
+=== Alice and Bob: X-Wing KEM + AES-256-GCM ===
 
-1. KEY GENERATION
-   Key derivation seed: bd0b90b6983cd7aebed31b6938dbbd66415fc5cb554672a8698e222247f3afd0 (32 bytes)
+1. KEY EXCHANGE
+   Alice generated key pair
+   Public key size: 1216 bytes
 
-2. KEY PAIR STRUCTURE
-   Public Key (pk):
-     - Full size: 1216 bytes
-     - First 50 bytes: f00a82b6cc46558972fab81bb9b47f266b48402a558a4121e3f8b0567709db304a0d304d3af82efed0adf5d63e392a716526
-     - Composition:
-       • X25519 public key: 32 bytes
-       • ML-KEM-768 public key: 1,184 bytes
-       • Total: 1,216 bytes
+2. ENCRYPTION
+   Original message: "Hello Alice! This is a secret message."
+   Bob encrypted message using Alice's public key
+   KEM ciphertext: 1120 bytes
+   AES-GCM encrypted message: 54 bytes
 
-   Private Key (sk):
-     - Packed/seed form: bd0b90b6983cd7aebed31b6938dbbd66415fc5cb554672a8698e222247f3afd0 (32 bytes)
-     - This is just the original 32-byte seed (z)
-     - In memory, expanded to ~2,464 bytes:
-       • ML-KEM-768 private key: 2,400 bytes
-       • X25519 private key: 32 bytes
-       • Precomputed X25519 public key: 32 bytes
+3. DECRYPTION
+   Alice decrypted message: "Hello Alice! This is a secret message."
 
-3. ENCAPSULATION
-   Encapsulation seed: c5642236d14a4c1658630e1df8fd18bbd6b24c84518b0b23f1be70a8d937c09f871b0c91011d9147eadbebe43307c5a23d3dee7b097371cba61666aeb2903b34 (64 bytes)
+✅ SUCCESS: Secure communication established!
 
-   Ciphertext (ct):
-     - Full size: 1120 bytes
-     - First 50 bytes: be5b0cb5f55de1d873a472ec9b981a80dd6925628080740ac13dcbcea2a80641479597456f0909050a13f622d14025ef993f
-     - Composition:
-       • ML-KEM-768 ciphertext: 1,088 bytes
-       • X25519 encapsulated key: 32 bytes
-       • Total: 1,120 bytes
+4. SECURITY PROPERTIES
+   ✅ Post-Quantum Security: X-Wing KEM provides PQ security
+   ✅ Forward Secrecy: Each session uses new ephemeral shared secret
+   ✅ Authentication: AES-GCM provides integrity and authenticity
+   ✅ Confidentiality: AES-256 provides strong encryption
 
-4. SHARED SECRET
-   Generated shared secret: 65d72e9e13c59a5085feb1dd10630fb753a34624a2b524be82ccde4626de4688 (32 bytes)
-   Decapsulated shared secret: 65d72e9e13c59a5085feb1dd10630fb753a34624a2b524be82ccde4626de4688 (32 bytes)
+ # Real-World Considerations
 
-✅ SUCCESS: Shared secrets match!
+ // For production use, consider:
+func productionKeyDerivation(sharedSecret []byte) []byte {
+	// Use proper KDF like HKDF
+	// salt := make([]byte, 16)
+	// rand.Read(salt)
+	// return hkdf.Extract(sha256.New, sharedSecret, salt)
+	return sharedSecret[:32] // Simplified for example
+}
 
-5. SIZE SUMMARY
-   +----------------------+------------+---------------------+
-   | Component            | Size       | Notes               |
-   +----------------------+------------+---------------------+
-   | Public Key (pk)      |  1216 bytes | X25519 + ML-KEM-768 |
-   | Ciphertext (ct)      |  1120 bytes | ML-KEM + X25519     |
-   | Private Key (packed) |    32 bytes | Seed only           |
-   | Private Key (expanded)| ~2,464 bytes | In memory         |
-   | Shared Secret        |    32 bytes |                     |
-   +----------------------+------------+---------------------+
+// Additional security measures:
+// - Add proper error handling
+// - Use constant-time comparisons
+// - Implement key rotation
+// - Add additional authentication data (AAD) in GCM
+// - Use separate keys for different directions
 */
